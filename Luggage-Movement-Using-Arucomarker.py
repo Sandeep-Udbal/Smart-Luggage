@@ -9,70 +9,42 @@ import time
 source = "esp32"  # Change to "webcam" to use the computer camera
 
 # URL for ESP32-CAM feed
-esp32_url = 'http://192.168.208.21/cam-hi.jpg'  # Replace with your ESP32-CAM's URL
-
-# PID Controller Class
-class PIDController:
-    def __init__(self, kp, ki, kd):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.prev_error = 0
-        self.integral = 0
-
-    def compute(self, error):
-        self.integral += error
-        derivative = error - self.prev_error
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        self.prev_error = error
-        return output
-
-# PID controller for x-axis error (turning)
-pid = PIDController(kp=0.5, ki=0.1, kd=0.05)
+esp32_url = 'http://192.168.151.21/cam-hi.jpg'  # Replace with your ESP32-CAM's URL
 
 # Function to calculate distance between two points
 def calculate_distance(point1, point2):
     return math.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
 
-# Function to calculate angular error
-def calculate_angle_error(marker_center, frame_center):
-    dx = marker_center[0] - frame_center[0]
-    dy = frame_center[1] - marker_center[1]  # Assuming y-axis increases downwards
-    angle = math.degrees(math.atan2(dy, dx))
-    return angle
+# Function to determine movement command with proportional control
+def robo_command(marker_center, frame_center, distance, stop_threshold=50, angle_threshold=50):
+    x_diff = marker_center[0] - frame_center[0]
+    distance_factor = max(0.5, 1 - (distance / 500))  # Scale factor for speed adjustment
+    
+    if distance < stop_threshold:
+        return "stop", 0  # Stop movement when close
+    
+    if abs(x_diff) <= angle_threshold:
+        return "forward", distance_factor  # Move forward with proportional speed
+    
+    turn_speed = min(1.0, abs(x_diff / frame_center[0]))  # Turn proportional to deviation
+    if x_diff > angle_threshold:
+        return "left", turn_speed  # Adjust speed based on deviation
+    elif x_diff < -angle_threshold:
+        return "right", turn_speed  # Adjust speed based on deviation
 
 # Function to detect and process ArUco markers
 def detect_and_process_aruco(frame):
     frame_center = (frame.shape[1] // 2, frame.shape[0] // 2)
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)
     parameters = cv2.aruco.DetectorParameters()
-    parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     corners, ids, _ = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=parameters)
 
     if ids is not None:
-        # Select the marker closest to the center
-        distances = [calculate_distance(frame_center, np.mean(corners[i][0], axis=0)) for i in range(len(ids))]
-        closest_idx = np.argmin(distances)
-        marker_center = np.mean(corners[closest_idx][0], axis=0).astype(int)
-        distance = distances[closest_idx]
-        angle_error = calculate_angle_error(marker_center, frame_center)
-        x_error = marker_center[0] - frame_center[0]
+        marker_center = np.mean(corners[0][0], axis=0).astype(int)
+        distance = calculate_distance(frame_center, marker_center)
+        command, speed = robo_command(marker_center, frame_center, distance)
 
-        # PID-based turn speed
-        turn_speed = pid.compute(x_error)
-
-        # Determine command
-        if distance < 50:
-            command = "stop"
-            speed = 0
-        elif abs(x_error) < 10:
-            command = "forward"
-            speed = max(0.3, min(1.0, distance / 500))
-        else:
-            command = "right" if x_error > 0 else "left"
-            speed = abs(turn_speed)
-
-        # Draw marker and information
+        # Draw marker and information on the frame
         cv2.circle(frame, tuple(marker_center), 5, (0, 255, 0), -1)
         cv2.line(frame, frame_center, tuple(marker_center), (255, 0, 0), 2)
         cv2.putText(frame, f"Distance: {distance:.2f}", (10, 30),
@@ -104,7 +76,7 @@ if __name__ == "__main__":
         cap = cv2.VideoCapture(0)
 
     # Socket setup
-    ip, port = "192.168.208.63", 8002
+    ip, port = "192.168.151.210", 8002
     s, conn = create_socket_connection(ip, port)
     if s is None or conn is None:
         exit(1)
@@ -130,7 +102,7 @@ if __name__ == "__main__":
 
             # Send command
             try:
-                conn.sendall(f"{command}\n")
+                conn.sendall(str.encode(f"{command}\n"))
                 print(f"Sent command: {command}")
             except Exception as e:
                 print(f"Socket error: {e}")
